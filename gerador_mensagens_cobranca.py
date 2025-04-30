@@ -1,197 +1,235 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# main.py
+# gerador_mensagens_cobranca.py
 
 import time
 import os
 from dotenv import load_dotenv
 import tkinter as tk
 from tkinter import filedialog
-import pandas as pd # Importado para usar pd.notna se necessário
+import pandas as pd
+import logging # Importado logging
+
+# --- Configuração do Logging ---
+# Formato detalhado para o arquivo de log
+log_formatter_detalhado = logging.Formatter(
+    '%(asctime)s - %(levelname)s - [%(module)s:%(lineno)d] - %(message)s', # Adiciona módulo e linha
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+# Formato simples para a saída do console (apenas a mensagem)
+log_formatter_console = logging.Formatter('%(message)s')
+
+# Configura o logger raiz
+logger_raiz = logging.getLogger()
+logger_raiz.setLevel(logging.INFO) # Define o nível geral (ex: INFO, DEBUG)
+
+# Remove handlers existentes para evitar duplicação se o script for re-executado no mesmo processo
+# (Útil em alguns cenários de teste ou execução repetida)
+if logger_raiz.hasHandlers():
+    logger_raiz.handlers.clear()
+
+# Handler para CONSOLE (saída padrão - como o print)
+console_handler = logging.StreamHandler() # Envia para stderr por padrão (pode usar sys.stdout)
+console_handler.setFormatter(log_formatter_console)
+# Opcional: Definir nível específico para o console, se diferente do logger raiz
+# console_handler.setLevel(logging.INFO)
+
+# Handler para ARQUIVO (guarda log detalhado)
+nome_arquivo_log = "processamento_cobrancas.log"
+try:
+    file_handler = logging.FileHandler(nome_arquivo_log, mode='a', encoding='utf-8') # 'a' para append
+    file_handler.setFormatter(log_formatter_detalhado)
+    # Opcional: Definir nível específico para o arquivo, ex: DEBUG
+    # file_handler.setLevel(logging.DEBUG)
+
+    # Adiciona os handlers ao logger raiz
+    logger_raiz.addHandler(console_handler)
+    logger_raiz.addHandler(file_handler)
+
+    # Mensagem inicial para confirmar configuração (será logada nos dois destinos)
+    logging.info(f"--- Logging iniciado. Console: limpo | Arquivo: '{nome_arquivo_log}' (detalhado) ---")
+
+except IOError as e:
+    # Se não conseguir criar o arquivo de log, avisa no console e continua sem log em arquivo
+    logger_raiz.addHandler(console_handler) # Garante que o console funcione
+    logging.error(f"ERRO CRÍTICO: Não foi possível criar/abrir o arquivo de log '{nome_arquivo_log}'. {e}")
+    logging.error("O script continuará, mas logs detalhados NÃO serão salvos no arquivo.")
+
+# ------------------------------
 
 # Carrega os módulos locais da aplicação
-# Garanta que a pasta 'modules' está no mesmo nível que main.py
-# e que contém os arquivos __init__.py (vazio), leitor_planilha.py, etc.
 try:
     from modules import leitor_planilha
     from modules import construtor_mensagem
-    from modules import arquivo_txt_sender # <--- USA O SENDER PARA ARQUIVOS .TXT
+    from modules import arquivo_txt_sender
+    logging.info("Módulos locais (leitor, construtor, sender) importados.") # Mais conciso
 except ImportError as e:
-     print("Erro Crítico: Não foi possível importar módulos da pasta 'modules'.")
-     print(f"Detalhe: {e}")
-     print("Verifique se a pasta 'modules' existe, contém um arquivo __init__.py (pode ser vazio)")
-     print("e os outros arquivos .py necessários (leitor_planilha, etc.).")
-     exit() # Encerra o script se módulos não puderem ser importados
-
+    logging.exception("Erro Crítico: Falha ao importar módulos da pasta 'modules'.")
+    logging.error("Verifique a estrutura da pasta 'modules' e seus arquivos.")
+    exit()
 
 # Carrega variáveis de ambiente do arquivo .env
-# A função load_dotenv() procura pelo arquivo .env no diretório atual ou nos pais
 if load_dotenv():
-     print("Arquivo .env carregado com sucesso.")
+    logging.info("Arquivo .env carregado.")
 else:
-     print("Aviso: Arquivo .env não encontrado na raiz do projeto.")
-     print("As configurações de nome de coluna e API dependerão das variáveis de ambiente do sistema (se existirem).")
-
+    logging.warning("AVISO: Arquivo .env não encontrado.")
 
 # --- Configurações ---
-# Pega nomes das colunas do .env que são usados diretamente em main.py
 COLUNA_NOME = os.getenv('COLUNA_NOME')
 COLUNA_TELEFONE = os.getenv('COLUNA_TELEFONE')
 
-# Tempo de pausa entre o processamento de cada linha (em segundos)
-# Pode ser útil para não sobrecarregar o sistema ou para simular um envio mais cadenciado
 try:
-    # Tenta ler do .env, senão usa o padrão 1
     DELAY_ENTRE_MENSAGENS_SEGUNDOS = int(os.getenv('DELAY_SEGUNDOS', 1))
+    logging.info(f"Delay entre mensagens: {DELAY_ENTRE_MENSAGENS_SEGUNDOS}s.")
 except ValueError:
-     print("Aviso: Valor inválido para DELAY_SEGUNDOS no .env. Usando padrão de 1 segundo.")
-     DELAY_ENTRE_MENSAGENS_SEGUNDOS = 1
-
+    logging.warning("AVISO: Valor inválido para DELAY_SEGUNDOS no .env. Usando padrão: 1s.")
+    DELAY_ENTRE_MENSAGENS_SEGUNDOS = 1
 
 def selecionar_arquivo_planilha():
     """
-    Abre uma janela gráfica para o usuário selecionar o arquivo da planilha Excel tratada.
-
-    Returns:
-        str: O caminho completo para o arquivo selecionado, ou None se o usuário cancelar.
+    Abre janela gráfica para selecionar o arquivo da planilha Excel tratada.
+    Returns: str or None
     """
-    print("\nAbrindo janela para seleção da planilha...")
+    logging.info("\nAbrindo janela para seleção da planilha...") # Adiciona linha extra para espaçar
     root = tk.Tk()
-    root.withdraw()  # Esconde a janela principal do Tkinter
-    # Força a janela de diálogo a aparecer na frente de outras janelas
+    root.withdraw()
     root.attributes('-topmost', True)
-
     caminho_arquivo = filedialog.askopenfilename(
         title="Selecione a planilha Excel TRATADA",
-        # Prioriza arquivos Excel, mas permite outros
         filetypes=[
             ("Arquivos Excel", "*.xlsx *.xls"),
-            ("Arquivos CSV (Fallback)", "*.csv"), # Mantém CSV caso o usuário trate para CSV
+            ("Arquivos CSV (Fallback)", "*.csv"),
             ("Todos os arquivos", "*.*")
         ]
     )
-    root.destroy() # Fecha a janela tk principal oculta após seleção
+    root.destroy()
 
     if caminho_arquivo:
-        print(f"Arquivo selecionado: {caminho_arquivo}")
+        logging.info(f"Arquivo selecionado: {os.path.basename(caminho_arquivo)}") # Loga só o nome base
+        # Log detalhado no arquivo
+        logger_raiz.handlers[1].handle(logging.LogRecord(
+            name=logger_raiz.name, level=logging.DEBUG, pathname=None, lineno=0,
+            msg=f"Caminho completo selecionado: {caminho_arquivo}", args=[], exc_info=None, func=''))
         return caminho_arquivo
     else:
-        print("Nenhum arquivo foi selecionado.")
+        logging.warning("Nenhum arquivo foi selecionado.")
         return None
 
 def processar_cobrancas():
     """
     Função principal para orquestrar a leitura, construção e salvamento das mensagens.
     """
-    print("\n--- Iniciando Processo de 'Envio' de Cobranças (Salvando em .txt) ---")
+    logging.info("\n--- Iniciando Processo de Geração de Arquivos de Cobrança (.txt) ---")
 
-    # Verifica se as colunas essenciais do .env foram carregadas para uso em main.py
+    # Verifica colunas essenciais
     if not COLUNA_NOME or not COLUNA_TELEFONE:
-         print("\nErro Crítico: Variáveis COLUNA_NOME ou COLUNA_TELEFONE não definidas no .env.")
-         print("Verifique se o arquivo .env existe e contém essas definições (Ex: COLUNA_NOME=CLIENTE).")
-         return # Encerra a função
-
-    # 1. Selecionar a planilha via interface gráfica
-    caminho_planilha_selecionada = selecionar_arquivo_planilha()
-
-    if not caminho_planilha_selecionada:
-        print("\nProcesso cancelado pelo usuário. Encerrando.")
+        logging.error("ERRO CRÍTICO: COLUNA_NOME ou COLUNA_TELEFONE não definidas no .env.")
         return
 
-    # 2. Carregar e pré-processar dados da planilha usando o módulo leitor
-    print(f"\n--- Carregando e Processando Planilha ---")
+    # 1. Selecionar planilha
+    caminho_planilha_selecionada = selecionar_arquivo_planilha()
+    if not caminho_planilha_selecionada:
+        logging.info("Processo cancelado. Encerrando.")
+        return
+
+    # 2. Carregar dados
+    logging.info(f"\n--- Carregando e Processando Planilha: {os.path.basename(caminho_planilha_selecionada)} ---")
+    # Os logs internos do leitor aparecerão aqui (limpos no console, detalhados no arquivo)
     dados_inadimplentes = leitor_planilha.carregar_inadimplentes(caminho_planilha_selecionada)
 
-    # Verifica se o carregamento foi bem-sucedido
     if dados_inadimplentes is None:
-        print("\nFalha ao carregar dados da planilha (verifique os erros acima). Encerrando.")
+        logging.error("Falha crítica ao carregar dados. Verifique logs anteriores. Encerrando.")
         return
     if dados_inadimplentes.empty:
-        print("\nPlanilha carregada está vazia. Nenhum registro para processar. Encerrando.")
+        logging.info("Planilha vazia ou sem dados válidos. Nenhum registro para processar.")
         return
 
-    # 3. Iniciar processamento dos registros
+    # 3. Processamento dos registros
     total_registros = len(dados_inadimplentes)
     salvos_sucesso = 0
     falhas = 0
-    print(f"\n--- Iniciando processamento de {total_registros} registros ---")
+    logging.info(f"\n--- Iniciando processamento de {total_registros} registros ---")
 
-    # Itera sobre cada linha do DataFrame
     for indice, cliente in dados_inadimplentes.iterrows():
-        print("-" * 20) # Separador visual para cada registro
-        print(f"Processando Registro {indice + 1}/{total_registros}...")
+        # Usar um log INFO para o separador no console
+        logging.info("-" * 20)
+        # E um log DEBUG (que só vai pro arquivo por padrão) para indicar o processamento
+        logging.debug(f"Processando linha DataFrame índice {indice}...")
 
-        # Extrai nome e telefone para validação e para o sender
-        # Usar .get() com valor padrão é mais seguro caso a coluna exista mas a célula esteja vazia
+        # Log INFO para o console
+        logging.info(f"Processando Registro {indice + 1}/{total_registros}...")
+
         nome_cliente = cliente.get(COLUNA_NOME, "Nome Ausente")
-        # O telefone já deve vir limpo (só dígitos) do leitor_planilha
         telefone = cliente.get(COLUNA_TELEFONE, "")
 
-        # Validação básica do telefone (essencial para nome do arquivo e futuro envio)
-        # Considera telefones brasileiros (fixo ou móvel) após limpeza
-        if not telefone or not isinstance(telefone, str) or not (10 <= len(telefone) <= 11):
-            print(f"AVISO: Telefone inválido ou ausente para '{nome_cliente}' (Valor: '{telefone}', Comprimento: {len(str(telefone))}). Pulando.")
+        # Validação do telefone
+        if not isinstance(telefone, str) or not (10 <= len(telefone) <= 11):
+            # Log WARNING para console e arquivo
+            logging.warning(f"AVISO: Telefone inválido/ausente para '{nome_cliente}' (Valor: '{telefone}'). Pulando.")
             falhas += 1
-            continue # Pula para o próximo cliente na planilha
+            continue
 
-        print(f"  - Cliente: {nome_cliente}")
-        print(f"  - Telefone (limpo): {telefone}")
+        # Logs INFO para console
+        logging.info(f"  - Cliente: {nome_cliente}")
+        logging.info(f"  - Telefone (limpo): {telefone}")
 
-        # 4. Construir a mensagem personalizada usando o módulo construtor
+        # 4. Construir mensagem
         try:
-             mensagem = construtor_mensagem.criar_mensagem_cobranca(cliente)
-             # print(f"  - Mensagem Gerada:\n{mensagem[:150]}...") # Descomente para pré-visualizar
+            # Logs internos do construtor (se houver) seguirão a mesma formatação
+            mensagem = construtor_mensagem.criar_mensagem_cobranca(cliente)
+            logging.debug(f"Mensagem construída para {nome_cliente}") # Só no arquivo
         except Exception as e_msg:
-             print(f"ERRO: Falha ao construir mensagem para '{nome_cliente}': {e_msg}. Pulando.")
-             falhas += 1
-             continue
+            # Log ERROR para console e arquivo
+            logging.error(f"ERRO: Falha ao construir mensagem para '{nome_cliente}': {e_msg}. Pulando.")
+            # Log mais detalhado com traceback para o arquivo
+            logging.exception(f"Detalhe da exceção ao construir msg para {nome_cliente}:")
+            falhas += 1
+            continue
 
-        # 5. Salvar a mensagem em arquivo .txt usando o módulo sender
-        print(f"  - Tentando salvar mensagem em arquivo .txt...")
+        # 5. Salvar mensagem em .txt
+        # Log INFO para console
+        logging.info(f"  - Tentando salvar mensagem em arquivo .txt...")
         try:
-             sucesso_salvar = arquivo_txt_sender.salvar_mensagem_em_txt(telefone, nome_cliente, mensagem)
+            # Logs internos do sender seguirão a formatação (INFO dele vai pro console limpo)
+            sucesso_salvar = arquivo_txt_sender.salvar_mensagem_em_txt(telefone, nome_cliente, mensagem)
         except Exception as e_save:
-             print(f"ERRO: Falha inesperada ao tentar salvar arquivo para '{nome_cliente}': {e_save}")
-             sucesso_salvar = False # Marca como falha
+            # Log ERROR para console e arquivo
+            logging.error(f"ERRO: Falha inesperada ao tentar salvar arquivo para '{nome_cliente}': {e_save}")
+            # Log mais detalhado com traceback para o arquivo
+            logging.exception(f"Detalhe da exceção ao salvar arquivo para {nome_cliente}:")
+            sucesso_salvar = False
 
-        # Atualiza contadores e loga resultado
         if sucesso_salvar:
             salvos_sucesso += 1
-            print("  - Mensagem salva com sucesso.")
+            # A confirmação de sucesso já é logada pelo sender, não precisa logar de novo aqui.
+            # Poderia logar um DEBUG aqui se quisesse algo extra só no arquivo.
+            logging.debug(f"Marcação de sucesso para {nome_cliente}")
         else:
             falhas += 1
-            print("  - Falha ao salvar a mensagem (ver logs do arquivo_txt_sender).")
+            # O erro já foi logado acima ou dentro do sender
+            logging.info(f"  - Falha ao salvar a mensagem.") # Informa no console
 
-        # 6. Pausa entre processamentos
-        if total_registros > 1 and indice < total_registros - 1: # Só pausa se houver mais de um e não for o último
-             print(f"  - Aguardando {DELAY_ENTRE_MENSAGENS_SEGUNDOS} segundo(s)...")
-             time.sleep(DELAY_ENTRE_MENSAGENS_SEGUNDOS)
+        # 6. Pausa
+        if total_registros > 1 and indice < total_registros - 1:
+             # Log INFO para console
+            logging.info(f"  - Aguardando {DELAY_ENTRE_MENSAGENS_SEGUNDOS} segundo(s)...")
+            time.sleep(DELAY_ENTRE_MENSAGENS_SEGUNDOS)
 
-    # Fim do loop for
-
-    # 7. Resumo final do processamento
-    print("\n" + "="*40)
-    print("--- Processo Concluído ---")
-    print(f"Planilha processada: {os.path.basename(caminho_planilha_selecionada)}")
-    print(f"Total de registros na planilha: {total_registros}")
-    print(f"Mensagens salvas com sucesso em arquivos .txt: {salvos_sucesso}")
-    print(f"Registros com falha ou pulados (telefone inválido/erro): {falhas}")
+    # 7. Resumo final
+    logging.info("\n" + "="*40)
+    logging.info("--- Processo Concluído ---")
+    logging.info(f"Planilha processada: {os.path.basename(caminho_planilha_selecionada)}")
+    logging.info(f"Total de registros na planilha: {total_registros}")
+    logging.info(f"Mensagens salvas com sucesso em arquivos .txt: {salvos_sucesso}")
+    logging.info(f"Registros com falha ou pulados: {falhas}")
     if salvos_sucesso > 0:
-        print(f"Verifique os arquivos na pasta: '{arquivo_txt_sender.DIRETORIO_SAIDA}'")
-    print("="*40)
+        try:
+            dir_saida = arquivo_txt_sender.DIRETORIO_SAIDA
+            logging.info(f"Verifique os arquivos na pasta: '{dir_saida}'")
+        except AttributeError:
+             logging.warning("AVISO: Não foi possível determinar o diretório de saída do 'arquivo_txt_sender'.")
+    logging.info("="*40)
 
-# Ponto de entrada principal do script
+# Ponto de entrada principal
 if __name__ == "__main__":
-    # Verifica se as variáveis de ambiente essenciais foram carregadas antes de iniciar
-    # Isso ajuda a pegar erros de .env ausente ou mal configurado logo no início.
-    if not COLUNA_NOME or not COLUNA_TELEFONE:
-        print("ERRO CRÍTICO: Variáveis COLUNA_NOME ou COLUNA_TELEFONE não carregadas do .env.")
-        print("Certifique-se que o arquivo .env existe na raiz do projeto e contém as configurações corretas.")
-        print("Exemplo:")
-        print("COLUNA_NOME=CLIENTE")
-        print("COLUNA_TELEFONE=TELEFONE")
-        print("COLUNA_VALOR=SALDO")
-        print("COLUNA_VENCIMENTO=VENCTO.")
-    else:
-        # Se as configurações básicas parecem OK, inicia o processo
-        processar_cobrancas()
+    processar_cobrancas()
