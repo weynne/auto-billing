@@ -4,74 +4,67 @@
 import os
 import pandas as pd
 from dotenv import load_dotenv
-import locale # Para formatação de moeda, opcional mas recomendado
+import locale
+import logging # <--- Importado logging
 
 # Carrega variáveis de ambiente
 load_dotenv()
 
-# Pega os nomes das colunas do .env
-COLUNA_NOME = os.getenv('COLUNA_NOME') # Ex: CLIENTE
-COLUNA_VALOR = os.getenv('COLUNA_VALOR') # Ex: SALDO
-COLUNA_VENCIMENTO = os.getenv('COLUNA_VENCIMENTO') # Ex: VENCTO.
+# Pega nomes das colunas
+COLUNA_NOME = os.getenv('COLUNA_NOME')
+COLUNA_VALOR = os.getenv('COLUNA_VALOR')
+COLUNA_VENCIMENTO = os.getenv('COLUNA_VENCIMENTO')
 
-# Configura a localização para formatação de moeda brasileira (opcional)
-# Pode ser necessário instalar o locale no sistema: sudo locale-gen pt_BR.UTF-8
-# Ou pode falhar em alguns ambientes. Se falhar, a formatação manual abaixo funciona.
+# Obtém logger
+logger = logging.getLogger(__name__)
+
+# Configura locale
 try:
     locale.setlocale(locale.LC_ALL, 'pt_BR.UTF-8')
-    print("Locale 'pt_BR.UTF-8' configurado para formatação de moeda.")
+    logger.info("Locale 'pt_BR.UTF-8' configurado para formatação de moeda.")
     use_locale = True
 except locale.Error:
-    print("Aviso: Locale 'pt_BR.UTF-8' não encontrado. Usando formatação de moeda manual.")
+    logger.warning("Locale 'pt_BR.UTF-8' não encontrado. Usando formatação de moeda manual.")
     use_locale = False
-
 
 def criar_mensagem_cobranca(dados_cliente):
     """
-    Cria uma mensagem de cobrança personalizada para um cliente.
-
-    Args:
-        dados_cliente (pandas.Series): Uma linha do DataFrame processado
-                                       pelo leitor_planilha.py.
-
-    Returns:
-        str: A mensagem formatada, pronta para ser enviada.
+    Cria uma mensagem de cobrança personalizada.
+    Args: dados_cliente (pandas.Series)
+    Returns: str
     """
+    logger.debug(f"Iniciando construção de mensagem para: {dados_cliente.get(COLUNA_NOME, 'Nome Desconhecido')}") # Nível DEBUG
 
-    # Extrai os dados usando os nomes das colunas do .env
-    # Usamos .get() com valor padrão para evitar erro se a coluna não existir por algum motivo
     nome = dados_cliente.get(COLUNA_NOME, "Cliente")
     valor_raw = dados_cliente.get(COLUNA_VALOR)
     vencimento_obj = dados_cliente.get(COLUNA_VENCIMENTO)
 
-    # Formata o Valor (Saldo)
-    valor_formatado = "[Valor Indisponível]" # Valor padrão em caso de erro
-    if pd.notna(valor_raw): # Verifica se não é NaN (erro de conversão anterior)
+    # Formata Valor
+    valor_formatado = "[Valor Indisponível]"
+    if pd.notna(valor_raw):
         try:
             valor_float = float(valor_raw)
             if use_locale:
-                 # Usa formatação de moeda local (ex: R$ 1.234,56)
-                 valor_formatado = locale.currency(valor_float, grouping=True, symbol='R$')
+                valor_formatado = locale.currency(valor_float, grouping=True, symbol='R$')
             else:
-                 # Formatação manual (ex: R$ 1.234,56)
-                 valor_formatado = f"R$ {valor_float:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                valor_formatado = f"R$ {valor_float:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            logger.debug(f"Valor formatado: {valor_formatado}") # Nível DEBUG
         except (ValueError, TypeError):
-             # Se ainda assim não for um número válido, mantém o padrão
-             pass
+            logger.warning(f"Não foi possível formatar o valor '{valor_raw}' como moeda para {nome}.")
+            pass # Mantém "[Valor Indisponível]"
 
-    # Formata a Data de Vencimento
-    vencimento_formatado = "[Data Indisponível]" # Valor padrão
-    # Verifica se não é NaT (Not a Time - erro de conversão de data)
+    # Formata Data de Vencimento
+    vencimento_formatado = "[Data Indisponível]"
     if pd.notna(vencimento_obj) and hasattr(vencimento_obj, 'strftime'):
         try:
-            vencimento_formatado = vencimento_obj.strftime('%d/%m/%Y') # Formato DD/MM/YYYY
+            vencimento_formatado = vencimento_obj.strftime('%d/%m/%Y')
+            logger.debug(f"Vencimento formatado: {vencimento_formatado}") # Nível DEBUG
         except ValueError:
-             # Se for uma data inválida que passou pela conversão inicial
-             pass
+            logger.warning(f"Não foi possível formatar a data '{vencimento_obj}' como DD/MM/YYYY para {nome}.")
+            pass # Mantém "[Data Indisponível]"
 
     # --- Monte sua Mensagem Aqui ---
-    # Use f-strings para inserir as variáveis formatadas.
-    # **Adapte o texto conforme sua necessidade.**
+    # **Adapte conforme sua necessidade.**
     mensagem = (
         f"Olá {nome},\n\n"
         f"Esperamos que esteja tudo bem.\n\n"
@@ -82,32 +75,5 @@ def criar_mensagem_cobranca(dados_cliente):
         "Agradecemos sua atenção,\n"
         "[Nome da Sua Empresa]"
     )
-
+    logger.debug(f"Mensagem final construída para {nome}.") # Nível DEBUG
     return mensagem
-
-# Bloco para teste rápido do módulo
-if __name__ == '__main__':
-    print("\n--- Testando construtor_mensagem.py ---")
-
-    # Garante que as variáveis do .env foram carregadas para o teste
-    if not all([COLUNA_NOME, COLUNA_VALOR, COLUNA_VENCIMENTO]):
-         print("Erro no teste: Defina COLUNA_NOME, COLUNA_VALOR, COLUNA_VENCIMENTO no seu .env")
-    else:
-        # Dados de exemplo simulando uma linha do DataFrame
-        dados_teste_ok = pd.Series({
-            COLUNA_NOME: "Fulano de Tal Teste",
-            COLUNA_VALOR: 1234.56,
-            COLUNA_VENCIMENTO: pd.to_datetime("2025-03-15")
-        })
-
-        dados_teste_erro = pd.Series({
-            COLUNA_NOME: "Ciclano Sem Dados",
-            COLUNA_VALOR: None, # Simula erro na conversão de valor (NaN)
-            COLUNA_VENCIMENTO: pd.NaT # Simula erro na conversão de data (NaT)
-        })
-
-        print("\n--- Mensagem Teste (Dados OK) ---")
-        print(criar_mensagem_cobranca(dados_teste_ok))
-
-        print("\n--- Mensagem Teste (Dados com Erro/Ausentes) ---")
-        print(criar_mensagem_cobranca(dados_teste_erro))
