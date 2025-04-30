@@ -172,3 +172,10 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Ignorar arquivos de dados reais da planilha (contêm dados sensíveis)
+*.xlsx
+*.csv
+
+# Pasta com mensagens .txt geradas (não versionar)
+mensagens_txt_geradas/
