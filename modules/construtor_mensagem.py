@@ -1,76 +1,64 @@
 # -*- coding: utf-8 -*-
 # modules/construtor_mensagem.py
 
-import os
-import pandas as pd # Importado para pd.Timestamp.min na ordenação
-from dotenv import load_dotenv
-import locale
 import logging
 
-# Carrega variáveis de ambiente (pode ser removido se não houver mais config aqui)
-# load_dotenv()
-
-# Obtém logger
 logger = logging.getLogger(__name__)
 
-# Configura locale (igual)
-# try:
-#     locale.setlocale(locale.LC_ALL, 'pt_BR.UTF-8')
-#     use_locale = True # Flag não necessária aqui se formatação vem de fora
-# except locale.Error:
-#     logger.warning("Locale 'pt_BR.UTF-8' não encontrado.")
-#     use_locale = False
-# ------------------------------
+def criar_mensagem_consolidada(nome_cliente, lista_parcelas_info, valor_total_fmt, nome_empresa):
+ 
+    logger.debug(f"Criando msg consolidada para {nome_cliente} com {len(lista_parcelas_info)} parcela(s) pela empresa {nome_empresa}.")
 
+    num_parcelas = len(lista_parcelas_info)
 
-# --- FUNÇÃO PARA MENSAGEM CONSOLIDADA ---
-def criar_mensagem_consolidada(nome_cliente, lista_parcelas_info, valor_total_fmt):
-    """
-    Cria uma mensagem de cobrança consolidada para WhatsApp.
-    Recebe dados já formatados.
-
-    Args:
-        nome_cliente (str): Nome do cliente (já limpo e formatado).
-        lista_parcelas_info (list): Lista de dicts [{'lote': str, 'vencimento': str, 'valor': str}].
-                                     O valor e vencimento já devem vir formatados.
-        valor_total_fmt (str): O valor total já formatado como string R$.
-
-    Returns:
-        str: A mensagem formatada.
-    """
-    logger.debug(f"Criando msg consolidada para {nome_cliente} com {len(lista_parcelas_info)} parcela(s).")
-
-# Monta a string com os detalhes das parcelas (FORMATO NOVO - MÚLTIPLAS LINHAS)
-    detalhes_parcelas_str = ""
-    if not lista_parcelas_info:
-        detalhes_parcelas_str = "Não foi possível listar os detalhes das parcelas.\n"
+    # --- Adapta texto introdutório ---
+    if num_parcelas == 0:
+        texto_intro = "Não identificamos pendências nos detalhes fornecidos."
+        detalhes_parcelas_str = ""
+    elif num_parcelas == 1:
+        texto_intro = "Identificamos a seguinte pendência em aberto conosco:"
     else:
-        # Opcional: Ordenar a lista aqui se não foi feito no gerador
-        # def sort_key(item): ...
-        # lista_parcelas_info.sort(key=sort_key)
+        texto_intro = "Identificamos as seguintes pendências em aberto conosco:"
 
+    # --- Monta detalhes das parcelas ---
+    detalhes_parcelas_str = ""
+    if num_parcelas > 0:
         for i, parcela in enumerate(lista_parcelas_info):
-            lote = parcela.get('lote', '[N/D]')
+            loteamento = parcela.get('loteamento_nome', '[Loteamento N/D]')
+            lote = parcela.get('lote', '[Ref N/D]') # Ref. original Lote/Número
             venc = parcela.get('vencimento', '[N/D]')
-            valor = parcela.get('valor', '[N/D]') # Valor já vem formatado
+            valor = parcela.get('valor', '[N/D]') 
+            detalhes_parcelas_str += f"{i+1}. *Loteamento {loteamento}*\n" 
+            detalhes_parcelas_str += f"    Lote: {lote}\n" 
+            detalhes_parcelas_str += f"    Venc: {venc}\n" 
+            detalhes_parcelas_str += f"    Valor: *{valor}*\n\n" 
 
-            # Adiciona as múltiplas linhas formatadas
-            detalhes_parcelas_str += f"{i+1}. Lote: _{lote}_\n"      # <-- ALTERADO AQUI
-            detalhes_parcelas_str += f"     Venc: {venc}\n"      # Indenta com espaços
-            detalhes_parcelas_str += f"     Valor: *{valor}*\n\n" # Indenta, Negrito no Valor, Linha extra
+        # Remove o último \n\n extra
+        if detalhes_parcelas_str.endswith('\n\n'):
+             detalhes_parcelas_str = detalhes_parcelas_str[:-2]
 
-    # --- Template da Mensagem (Exemplo 1 - ajuste se necessário) ---
+    # --- Template da Mensagem ---
     mensagem = (
         f"Olá {nome_cliente}! 👋\n\n"
-        f"Identificamos as seguintes pendências:\n\n"
-        f"{detalhes_parcelas_str}\n" # Insere a lista de parcelas
-        f"*Valor Total: {valor_total_fmt}*\n\n" # Mostra o total geral
+        f"{texto_intro}\n\n"
+        f"{detalhes_parcelas_str}\n\n"
+        f"*Valor Total: {valor_total_fmt}*\n\n"
         f"👇 Como regularizar ou tirar dúvidas:\n"
         f"1️⃣ Responda esta mensagem.\n"
-        f"2️⃣ Ligue para: [Seu Número de Telefone]\n\n"
+        f"2️⃣ Ligue para: [Seu Número de Telefone]\n\n" 
         f"Caso o pagamento já tenha sido efetuado, por favor, desconsidere esta mensagem.\n\n"
         f"Atenciosamente,\n"
-        f"_[Nome da Sua Empresa]_"
+        f"{nome_empresa}"
     )
+
+    # --- Limpeza Final ---
+    linhas = mensagem.splitlines()
+    linhas_filtradas = []
+    if linhas:
+        linhas_filtradas.append(linhas[0])
+        for i in range(1, len(linhas)):
+            if linhas[i].strip() or linhas[i-1].strip():
+                linhas_filtradas.append(linhas[i])
+    mensagem = '\n'.join(linhas_filtradas)
 
     return mensagem

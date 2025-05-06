@@ -3,27 +3,21 @@
 
 import os
 import re
-import logging # Já estava usando!
+import logging 
 from datetime import datetime
 
-# Obtém logger (se já não estava fazendo)
+# Obtém logger 
 logger = logging.getLogger(__name__)
 
 # Diretório de saída
 DIRETORIO_SAIDA = "mensagens_txt_geradas"
 
-def limpar_nome_arquivo(nome):
-    """Remove caracteres inválidos para nomes de arquivo."""
+def limpar_nome_arquivo(nome): 
     nome = re.sub(r'[^\w\s-]', '', nome)
     nome = re.sub(r'\s+', '_', nome)
     return nome[:50]
 
-def salvar_mensagem_em_txt(telefone_destino, nome_cliente, mensagem):
-    """
-    Salva a mensagem em um arquivo .txt individual.
-    Args: telefone_destino (str), nome_cliente (str), mensagem (str)
-    Returns: bool
-    """
+def salvar_mensagem_em_txt(telefone_destino, nome_cliente, mensagem): 
     if not telefone_destino:
         logger.warning("Telefone de destino ausente ou inválido, usando 'telefone_na' no nome do arquivo.")
         telefone_destino = "telefone_na"
@@ -47,15 +41,12 @@ def salvar_mensagem_em_txt(telefone_destino, nome_cliente, mensagem):
             f.write(f"Destinatário (Telefone): {telefone_destino}\n")
             f.write(f"Nome: {nome_cliente}\n")
             f.write("="*30 + "\n")
-            f.write(mensagem)
-        # Mensagem de sucesso agora é logada pelo script principal,
-        # mas podemos manter um log DEBUG aqui se quisermos.
+            f.write(mensagem) 
         logger.info(f"Mensagem para {nome_cliente} ({telefone_destino}) salva em: {caminho_completo}") # Mantido INFO pois é uma confirmação importante
         return True
     except IOError as e:
         logger.error(f"Erro de I/O ao salvar arquivo '{caminho_completo}': {e}")
         return False
-    except Exception as e:
-        # Usar exception aqui é bom para capturar o traceback completo
+    except Exception as e: 
         logger.exception(f"Erro inesperado ao salvar arquivo para {nome_cliente}")
         return False
