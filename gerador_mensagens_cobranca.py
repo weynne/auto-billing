@@ -1,348 +1,241 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # gerador_mensagens_cobranca.py
-
 import time
 import os
-from dotenv import load_dotenv 
+from dotenv import load_dotenv
 import pandas as pd
 import logging
 import sys
 import locale
 
-# --- Carregamento .env ---
-if load_dotenv(): 
-    logging.info("GMC_LOG: Arquivo .env carregado (por gerador_mensagens_cobranca).")
-else: 
-    logging.warning("GMC_LOG: AVISO - Arquivo .env não encontrado (por gerador_mensagens_cobranca).")
+# --- Configurações Iniciais ---
+# MUDANÇA: Carregamento do .env e configuração do logging movidos para uma função.
+def setup_environment_and_logging():
+    """Carrega .env e configura handlers de log (console e arquivo) se não existirem."""
+    if load_dotenv():
+        print("GMC_SETUP: Arquivo .env carregado.")
+    else:
+        print("GMC_SETUP: AVISO - Arquivo .env não encontrado.")
 
-# --- Configuração do Logging ---
-logger_raiz = logging.getLogger()
-if logger_raiz.level == logging.NOTSET or logger_raiz.level > logging.INFO: # Garante que INFO passe
-    logger_raiz.setLevel(logging.INFO)
+    root_logger = logging.getLogger()
+    if not root_logger.handlers:
+        root_logger.setLevel(logging.INFO)
+        # Handler para o console
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(module)s: %(message)s', datefmt='%H:%M:%S'))
+        root_logger.addHandler(console_handler)
+        # Handler para o arquivo
+        try:
+            log_path = "processamento_cobrancas.log"
+            file_handler = logging.FileHandler(log_path, mode='a', encoding='utf-8')
+            file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - [%(module)s:%(lineno)d] - %(message)s'))
+            root_logger.addHandler(file_handler)
+            logging.info(f"Log de arquivo configurado em: '{os.path.abspath(log_path)}'")
+        except IOError as e:
+            logging.error(f"Erro crítico ao criar log de arquivo: {e}")
 
-# Adiciona handlers apenas se não existirem tipos similares para evitar duplicação
-console_handler_exists = any(isinstance(h, logging.StreamHandler) and h.stream == sys.stdout for h in logger_raiz.handlers)
-file_handler_log_path = os.path.abspath("processamento_cobrancas.log") 
-file_handler_exists = any(isinstance(h, logging.FileHandler) and getattr(h, 'baseFilename', '') == file_handler_log_path for h in logger_raiz.handlers)
+# MUDANÇA: Executa o setup imediatamente ao importar o módulo
+setup_environment_and_logging()
 
-if not console_handler_exists:
-    log_formatter_console = logging.Formatter('%(asctime)s [%(levelname)s] %(module)s L%(lineno)d: %(message)s', datefmt='%H:%M:%S')
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(log_formatter_console)
-    console_handler.setLevel(logging.INFO) 
-    logger_raiz.addHandler(console_handler)
 
-if not file_handler_exists:
-    try:
-        log_formatter_detalhado = logging.Formatter('%(asctime)s - %(levelname)s - [%(module)s:%(lineno)d] - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-        file_handler = logging.FileHandler(file_handler_log_path, mode='a', encoding='utf-8')
-        file_handler.setFormatter(log_formatter_detalhado)
-        file_handler.setLevel(logging.INFO) 
-        logger_raiz.addHandler(file_handler)
-        # Não logar aqui para evitar recursão se o logging já estiver ativo por outro meio (Streamlit)
-        # logging.info(f"GMC_LOG: File handler adicionado por gerador_mensagens_cobranca. Log: '{file_handler_log_path}'")
-    except IOError as e_log:
-        logging.error(f"GMC_LOG: ERRO CRÍTICO ao criar log de arquivo '{file_handler_log_path}': {e_log}")
-
-# --- Carregamento de Módulos e Constantes do Projeto ---
+# --- Importação de Módulos do Projeto ---
 try:
-    from modules import leitor_planilha
-    from modules import construtor_mensagem
-    from modules import arquivo_txt_sender 
+    from modules import leitor_planilha, construtor_mensagem, arquivo_txt_sender
     from config import MAPEAMENTO_LOTEAMENTO, MAPEAMENTO_EMPRESA_POR_CODIGO, EMPRESA_PADRAO
 except ImportError as e:
-    logging.critical(f"GMC_LOG: Erro Crítico ao importar submódulos ou config: {e}", exc_info=True)
-    if __name__ == "__main__": exit() # Se rodando standalone, pode sair
-    else: raise # Se importado, levanta a exceção para o importador tratar
+    logging.critical(f"Erro Crítico ao importar submódulos ou config: {e}", exc_info=True)
+    raise
 
-# --- Configurações do .env (lidas globalmente após load_dotenv) ---
-COLUNA_NOME = os.getenv('COLUNA_NOME')
-COLUNA_TELEFONE = os.getenv('COLUNA_TELEFONE')
-COLUNA_LOTE = os.getenv('COLUNA_LOTE') 
-COLUNA_VALOR = os.getenv('COLUNA_VALOR')
-COLUNA_VENCIMENTO = os.getenv('COLUNA_VENCIMENTO')
-COLUNA_LOTEAMENTO = os.getenv('COLUNA_LOTEAMENTO')
-DELAY_ENTRE_MENSAGENS_SEGUNDOS_GLOBAL = 1 
+# --- Carregamento das Configurações do .env ---
+# MUDANÇA: Agrupado em um dicionário para facilitar o acesso
+CONFIG = {
+    'col_nome': os.getenv('COLUNA_NOME'),
+    'col_telefone': os.getenv('COLUNA_TELEFONE'),
+    'col_lote': os.getenv('COLUNA_LOTE'),
+    'col_valor': os.getenv('COLUNA_VALOR'),
+    'col_vencimento': os.getenv('COLUNA_VENCIMENTO'),
+    'col_loteamento': os.getenv('COLUNA_LOTEAMENTO'),
+    'delay_segundos': int(os.getenv('DELAY_SEGUNDOS', '1')),
+    'telefone_contato': os.getenv('TELEFONE_CONTATO', '[Seu Número de Telefone]')
+}
 
-# --- Configura Locale e Função Auxiliar de Moeda ---
-try:
-    locale.setlocale(locale.LC_ALL, 'pt_BR.UTF-8')
-except locale.Error:
-    try: 
-        locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
-        logging.warning("GMC_LOG: Locale 'pt_BR.UTF-8' não encontrado. Usando 'en_US.UTF-8'.")
-    except locale.Error: 
-        logging.warning("GMC_LOG: Nenhum locale (pt_BR, en_US) suportado encontrado. Formatação de moeda pode usar padrão do sistema.")
+# --- Funções Auxiliares ---
 
-def formatar_valor_moeda_local(valor_float):
-    if not isinstance(valor_float, (int, float)) or pd.isna(valor_float): return "[Valor Inválido]"
+def _formatar_moeda(valor):
+    """Tenta formatar um float como moeda BRL, com fallback robusto."""
+    if not isinstance(valor, (int, float)):
+        return "N/A"
     try:
-        # Tenta usar o locale para formatação, mas tem fallback para o método de substituição
-        # se o locale não for explicitamente pt_BR.
-        current_locale_numeric_tuple = locale.getlocale(locale.LC_NUMERIC) # (ex: ('pt_BR', 'UTF-8'))
-        current_locale_numeric_str = current_locale_numeric_tuple[0] if current_locale_numeric_tuple else None
-        
-        if current_locale_numeric_str and 'pt_BR' in current_locale_numeric_str:
-            return locale.currency(valor_float, grouping=True, symbol='R$')
-        else: # Fallback para formatação manual se o locale não for pt_BR ou não estiver configurado
-            valor_fmt = f'{valor_float:,.2f}' # Formato com vírgula como separador de milhar e ponto decimal
-            if locale.localeconv()['decimal_point'] == '.': # Se o sistema usa ponto decimal
-                 valor_fmt = valor_fmt.replace(',', '#TEMP#').replace('.', ',').replace('#TEMP#', '.')
-            return f"R$ {valor_fmt}"
+        locale.setlocale(locale.LC_ALL, 'pt_BR.UTF-8')
+    except locale.Error:
+        logging.warning("Locale 'pt_BR.UTF-8' não disponível. Usando formatação manual.")
+        return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return locale.currency(valor, grouping=True, symbol='R$')
+
+def _salvar_descartados(df_descartados, nome_arquivo_original):
+    """
+    # MUDANÇA: Função dedicada para salvar a planilha de contatos descartados.
+    """
+    if df_descartados.empty:
+        return None, 0
+    
+    dir_descartados = "contatos_descartados"
+    os.makedirs(dir_descartados, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    nome_base = os.path.splitext(os.path.basename(nome_arquivo_original))[0]
+    caminho_arquivo = os.path.join(dir_descartados, f"{nome_base}_descartados_{timestamp}.xlsx")
+
+    try:
+        df_descartados.to_excel(caminho_arquivo, index=False)
+        logging.info(f"{len(df_descartados)} contatos descartados salvos em: {caminho_arquivo}")
+        return caminho_arquivo, len(df_descartados)
     except Exception as e:
-        logging.warning(f"GMC_LOG: Erro ao formatar valor {valor_float} para moeda: {e}. Usando fallback.")
-        # Fallback muito simples em caso de erro extremo
-        return f"R$ {valor_float:.2f}".replace('.',',')
+        logging.error(f"Falha ao salvar arquivo de descartados: {e}")
+        return None, 0
 
+def _processar_grupo_cliente(telefone, grupo_df):
+    """
+    # MUDANÇA: Função dedicada para processar um grupo de parcelas de um mesmo telefone.
+    Agrega dados, constrói e salva a mensagem.
+    """
+    nome_cliente = grupo_df[CONFIG['col_nome']].iloc[0]
+    logging.info(f"Processando grupo para Cliente: {nome_cliente} | Telefone: {telefone} | Parcelas: {len(grupo_df)}")
 
-def selecionar_arquivo_planilha_standalone():
-    import tkinter as tk
-    from tkinter import filedialog
-    logging.info("GMC_LOG (Standalone): Abrindo janela para seleção da planilha...")
-    root = tk.Tk(); root.withdraw(); root.attributes('-topmost', True)
-    caminho_arquivo = filedialog.askopenfilename(title="Selecione a planilha Excel TRATADA (.xlsx)", filetypes=[("Excel", "*.xlsx *.xls"), ("Todos", "*.*")])
-    root.destroy()
-    if caminho_arquivo: logging.info(f"GMC_LOG (Standalone): Arquivo selecionado: {os.path.basename(caminho_arquivo)}")
-    else: logging.warning("GMC_LOG (Standalone): Nenhum arquivo foi selecionado.")
-    return caminho_arquivo
-
-def processar_cobrancas(arquivo_planilha_input=None, delay_override=None):
-    logging.info("GMC_LOG: [INICIO] processar_cobrancas") 
-    logging.debug(f"GMC_LOG: Handlers no logger raiz ao iniciar processar_cobrancas: {logging.getLogger().handlers}")
-
-    current_delay_seconds = DELAY_ENTRE_MENSAGENS_SEGUNDOS_GLOBAL
-    if delay_override is not None:
-        try: current_delay_seconds = int(delay_override)
-        except ValueError: logging.warning(f"GMC_LOG: Delay_override inválido '{delay_override}'. Usando padrão do .env ou código.")
+    lista_parcelas_info = []
+    valor_total = 0.0
+    
+    # Lógica para determinar a empresa (simplificada)
+    codigos_loteamento = grupo_df[CONFIG['col_loteamento']].str.split('/').str[0].str.strip().unique()
+    empresas_encontradas = {MAPEAMENTO_EMPRESA_POR_CODIGO.get(cod) for cod in codigos_loteamento if cod in MAPEAMENTO_EMPRESA_POR_CODIGO}
+    
+    if len(empresas_encontradas) == 1:
+        nome_empresa = empresas_encontradas.pop()
     else:
-        try: current_delay_seconds = int(os.getenv('DELAY_SEGUNDOS', str(DELAY_ENTRE_MENSAGENS_SEGUNDOS_GLOBAL)))
-        except ValueError: logging.warning(f"GMC_LOG: DELAY_SEGUNDOS do .env inválido. Usando padrão do código: {current_delay_seconds}s.")
-    logging.info(f"GMC_LOG: Delay entre mensagens: {current_delay_seconds}s.")
+        if len(empresas_encontradas) > 1:
+            logging.warning(f"Cliente {nome_cliente} com múltiplas empresas. Usando empresa padrão.")
+        nome_empresa = EMPRESA_PADRAO
 
-    resultados_processamento = {
+    for _, parcela in grupo_df.iterrows():
+        cod_loteamento = str(parcela.get(CONFIG['col_loteamento'], '')).split('/')[0].strip()
+        valor_parcela = parcela.get(CONFIG['col_valor'], 0.0)
+        
+        info = {
+            'loteamento_nome': MAPEAMENTO_LOTEAMENTO.get(cod_loteamento, f"[Cód:{cod_loteamento}]"),
+            'lote': parcela.get(CONFIG['col_lote'], 'N/A'),
+            'vencimento': parcela.get(CONFIG['col_vencimento']).strftime('%d/%m/%Y') if pd.notna(parcela.get(CONFIG['col_vencimento'])) else 'N/A',
+            'valor': _formatar_moeda(valor_parcela)
+        }
+        lista_parcelas_info.append(info)
+        if isinstance(valor_parcela, (int, float)):
+            valor_total += valor_parcela
+            
+    # Cria e salva a mensagem
+    mensagem = construtor_mensagem.criar_mensagem_consolidada(
+        nome_cliente=nome_cliente,
+        lista_parcelas_info=lista_parcelas_info,
+        valor_total_fmt=_formatar_moeda(valor_total),
+        nome_empresa=nome_empresa,
+        telefone_contato=CONFIG['telefone_contato']
+    )
+    
+    return arquivo_txt_sender.salvar_mensagem_em_txt(telefone, nome_cliente, mensagem)
+
+
+# --- FUNÇÃO PRINCIPAL ---
+def processar_cobrancas(arquivo_planilha_input):
+    logging.info("--- [INÍCIO] Processamento de Cobranças ---")
+    
+    # Validação inicial de configuração
+    if not CONFIG['col_nome'] or not CONFIG['col_telefone']:
+        msg = "ERRO CRÍTICO: Nomes das colunas de NOME ou TELEFONE não definidos no .env."
+        logging.error(msg)
+        return {'status': 'falha', 'message': msg}
+
+    # Carrega e pré-processa a planilha
+    df = leitor_planilha.carregar_inadimplentes(arquivo_planilha_input, CONFIG)
+    nome_arquivo = getattr(arquivo_planilha_input, 'name', 'arquivo_local.xlsx')
+    
+    resultados = {
         'status': 'falha', 'message': 'Processo não iniciado.',
-        'planilha_processada': None, 'total_registros_carregados': 0,
-        'total_descartados_sem_telefone': 0, 'total_com_telefone': 0,
-        'total_telefones_unicos': 0, 'mensagens_sucesso': 0,
-        'falhas_envio': 0, 'output_dir': arquivo_txt_sender.DIRETORIO_SAIDA,
-        'caminho_arquivo_descartados': None, 'num_descartados_arquivo': 0
+        'planilha_processada': nome_arquivo, 'total_registros_carregados': 0,
+        'output_dir': arquivo_txt_sender.DIRETORIO_SAIDA,
     }
 
-    if not COLUNA_NOME or not COLUNA_TELEFONE:
-        msg_erro = "GMC_LOG: ERRO CRÍTICO - COLUNA_NOME ou COLUNA_TELEFONE não definidas no .env."
-        logging.error(msg_erro)
-        resultados_processamento['message'] = msg_erro; return resultados_processamento
+    if df is None or df.empty:
+        msg = f"Falha ao carregar dados de '{nome_arquivo}' ou planilha vazia/inválida."
+        logging.error(msg)
+        resultados['message'] = msg
+        if df is not None: resultados['total_registros_carregados'] = len(df)
+        return resultados
 
-    nome_arquivo_processado = "N/A"
-    if arquivo_planilha_input:
-        nome_arquivo_processado = getattr(arquivo_planilha_input, 'name', 'arquivo_da_interface.xlsx')
-        logging.info(f"GMC_LOG: Usando planilha da interface: {nome_arquivo_processado}")
-        dados_inadimplentes = leitor_planilha.carregar_inadimplentes(arquivo_planilha_input)
+    resultados['total_registros_carregados'] = len(df)
+    
+    # Separa contatos válidos e descartados
+    filtro_validos = df[CONFIG['col_telefone']].notna() & (df[CONFIG['col_telefone']] != '')
+    df_validos = df[filtro_validos]
+    df_descartados = df[~filtro_validos]
+    
+    # Salva descartados em um arquivo Excel separado
+    caminho_descartados, num_descartados = _salvar_descartados(df_descartados, nome_arquivo)
+    resultados.update({
+        'caminho_arquivo_descartados': caminho_descartados,
+        'num_descartados_arquivo': num_descartados,
+        'total_com_telefone': len(df_validos)
+    })
+
+    if df_validos.empty:
+        msg = "Nenhum registro com telefone válido foi encontrado para processar."
+        logging.info(msg)
+        resultados.update({'status': 'sucesso_sem_dados', 'message': msg})
+        return resultados
+        
+    # Agrupa por telefone e processa cada grupo
+    grupos = df_validos.groupby(CONFIG['col_telefone'], sort=False)
+    resultados['total_telefones_unicos'] = len(grupos)
+    
+    sucessos = 0
+    falhas = 0
+    
+    logging.info(f"Iniciando geração de mensagens para {len(grupos)} telefones únicos.")
+    
+    for i, (telefone, grupo_df) in enumerate(grupos):
+        if _processar_grupo_cliente(telefone, grupo_df):
+            sucessos += 1
+        else:
+            falhas += 1
+        
+        if i < len(grupos) - 1: # Evita delay após o último item
+            time.sleep(CONFIG['delay_segundos'])
+            
+    # Finaliza e retorna os resultados consolidados
+    if falhas == 0:
+        message = "Processamento concluído com sucesso!"
+        status = 'sucesso'
     else:
-        caminho_arquivo_tk = selecionar_arquivo_planilha_standalone()
-        if not caminho_arquivo_tk: resultados_processamento['message'] = "Processo cancelado (nenhum arquivo selecionado)."; return resultados_processamento 
-        nome_arquivo_processado = os.path.basename(caminho_arquivo_tk)
-        dados_inadimplentes = leitor_planilha.carregar_inadimplentes(caminho_arquivo_tk)
-    
-    resultados_processamento['planilha_processada'] = nome_arquivo_processado
-    if dados_inadimplentes is None or dados_inadimplentes.empty:
-        msg_erro = f"GMC_LOG: Falha ao carregar dados de '{nome_arquivo_processado}' ou planilha vazia."
-        logging.error(msg_erro)
-        resultados_processamento['message'] = msg_erro
-        if dados_inadimplentes is not None: resultados_processamento['total_registros_carregados'] = len(dados_inadimplentes)
-        return resultados_processamento
-    resultados_processamento['total_registros_carregados'] = len(dados_inadimplentes)
+        message = f"Processo concluído com {falhas} falhas."
+        status = 'sucesso_parcial'
 
-    caminho_arquivo_descartados_gerado = None
-    num_registros_no_arquivo_descartados = 0
-    telefone_ausente_mask = pd.Series(False, index=dados_inadimplentes.index) 
-
-    if COLUNA_TELEFONE in dados_inadimplentes.columns:
-        telefone_ausente_mask = pd.isna(dados_inadimplentes[COLUNA_TELEFONE]) | (dados_inadimplentes[COLUNA_TELEFONE].astype(str).str.strip() == '')
-        df_descartados_sem_telefone = dados_inadimplentes[telefone_ausente_mask].copy()
-        if not df_descartados_sem_telefone.empty:
-            num_registros_no_arquivo_descartados = len(df_descartados_sem_telefone)
-            DIR_DESCARTADOS = "contatos_descartados" 
-            os.makedirs(DIR_DESCARTADOS, exist_ok=True)
-            timestamp_atual = time.strftime("%Y%m%d_%H%M%S")
-            nome_base_planilha = os.path.splitext(os.path.basename(nome_arquivo_processado))[0]
-            nome_arq_desc = f"{nome_base_planilha}_descartados_sem_telefone_{timestamp_atual}.xlsx"
-            caminho_arquivo_descartados_gerado = os.path.join(DIR_DESCARTADOS, nome_arq_desc)
-            try:
-                df_descartados_sem_telefone.loc[:, 'MOTIVO_DESCARTE'] = 'Telefone ausente ou inválido na planilha original'
-                df_descartados_sem_telefone.to_excel(caminho_arquivo_descartados_gerado, index=False)
-                logging.info(f"GMC_LOG: Arquivo de {num_registros_no_arquivo_descartados} contatos descartados salvo em: {caminho_arquivo_descartados_gerado}")
-            except Exception as e_excel:
-                logging.error(f"GMC_LOG: Erro ao salvar arquivo de descartados '{caminho_arquivo_descartados_gerado}': {e_excel}")
-                caminho_arquivo_descartados_gerado = None; num_registros_no_arquivo_descartados = 0 
-        else: logging.info("GMC_LOG: Nenhum registro com telefone ausente para gerar arquivo de descartados.")
-    else: logging.warning(f"GMC_LOG: Coluna '{COLUNA_TELEFONE}' não encontrada em dados_inadimplentes. Não foi possível gerar arquivo de descartados.")
-    resultados_processamento['caminho_arquivo_descartados'] = caminho_arquivo_descartados_gerado
-    resultados_processamento['num_descartados_arquivo'] = num_registros_no_arquivo_descartados
-
-    dados_validos = dados_inadimplentes.dropna(subset=[COLUNA_TELEFONE])
-    if not dados_validos.empty and COLUNA_TELEFONE in dados_validos.columns:
-         dados_validos = dados_validos[dados_validos[COLUNA_TELEFONE].astype(str).str.strip() != '']
-    total_apos_filtro_telefone = len(dados_validos)
-    total_descartados_do_processamento = len(dados_inadimplentes) - total_apos_filtro_telefone
-    resultados_processamento.update({
-        'total_descartados_sem_telefone': total_descartados_do_processamento,
-        'total_com_telefone': total_apos_filtro_telefone
+    resultados.update({
+        'status': status,
+        'message': message,
+        'mensagens_sucesso': sucessos,
+        'falhas_envio': falhas
     })
-    if total_descartados_do_processamento > 0:
-        logging.warning(f"GMC_LOG: --- {total_descartados_do_processamento} registros foram REMOVIDOS do processamento por telefone inválido/ausente. ---")
-        if dados_inadimplentes[telefone_ausente_mask].index.any():
-            # A condição de logar apenas se o arquivo de descarte não foi gerado foi removida
-            # para sempre logar alguns detalhes, se houver descartes.
-            logging.info("GMC_LOG: Detalhando alguns descartados (por falta de telefone) no log:")
-            count_log_descartados = 0
-            for idx_descartado in dados_inadimplentes[telefone_ausente_mask].index: 
-                if count_log_descartados < 10: 
-                    try:
-                        nome_descartado_log = dados_inadimplentes.loc[idx_descartado, COLUNA_NOME] if COLUNA_NOME in dados_inadimplentes.columns else "[Nome N/D]"
-                        # ***** ESTA É A LINHA CORRIGIDA *****
-                        logging.warning(f"GMC_LOG:  - DESCARTADO (Ref. Linha Planilha: {idx_descartado + 1}): Cliente '{nome_descartado_log}' - Telefone ausente.")
-                    except Exception as e_log_det:
-                        # ***** E ESTA TAMBÉM *****
-                        logging.warning(f"GMC_LOG:  - DESCARTADO (Ref. Linha Planilha: {idx_descartado + 1}): Telefone ausente (Erro ao buscar detalhes: {e_log_det})")
-                    finally:
-                        count_log_descartados += 1
-                else:
-                    if total_descartados_do_processamento > count_log_descartados:
-                        logging.info(f"GMC_LOG:  ... e mais {total_descartados_do_processamento - count_log_descartados} registros descartados não detalhados no log.")
-                    break
-        elif total_descartados_do_processamento > 0 : 
-             logging.warning(f"GMC_LOG: {total_descartados_do_processamento} registros descartados, mas não foi possível detalhá-los individualmente no log (verifique a máscara 'telefone_ausente_mask').")
-
-
-    if dados_validos.empty:
-        msg_info = "GMC_LOG: Nenhum registro com telefone válido para processar mensagens."
-        logging.info(msg_info); resultados_processamento.update({'message': msg_info, 'status': 'sucesso_sem_dados_para_msg'})
-        return resultados_processamento
-
-    logging.info(f"GMC_LOG: Agrupando {len(dados_validos)} registros válidos por telefone...")
-    try:
-        colunas_ordenacao = [COLUNA_NOME] if COLUNA_NOME and COLUNA_NOME in dados_validos.columns else []
-        dados_para_agrupar = dados_validos.copy() 
-        if COLUNA_VENCIMENTO and COLUNA_VENCIMENTO in dados_para_agrupar.columns and \
-           pd.api.types.is_datetime64_any_dtype(dados_para_agrupar[COLUNA_VENCIMENTO]):
-            if COLUNA_VENCIMENTO not in colunas_ordenacao: colunas_ordenacao.append(COLUNA_VENCIMENTO)
-        elif COLUNA_VENCIMENTO and COLUNA_VENCIMENTO in dados_para_agrupar.columns:
-             logging.warning(f"GMC_LOG: Coluna '{COLUNA_VENCIMENTO}' não é data/datetime para ordenação.")
-        if colunas_ordenacao:
-            na_pos = 'last' if COLUNA_VENCIMENTO in colunas_ordenacao else 'first'
-            dados_para_agrupar.sort_values(by=colunas_ordenacao, na_position=na_pos, inplace=True)
-        else: logging.debug("GMC_LOG: Nenhuma coluna válida para ordenação pré-agrupamento.") # Mudado para debug
-        
-        grupos_por_telefone = dados_para_agrupar.groupby(COLUNA_TELEFONE, sort=False)
-        total_telefones_unicos = len(grupos_por_telefone)
-        resultados_processamento['total_telefones_unicos'] = total_telefones_unicos
-    except Exception as e_group:
-        msg_erro = f"GMC_LOG: Erro no agrupamento/ordenação: {e_group}"
-        logging.exception(msg_erro); resultados_processamento.update({'message': msg_erro, 'status': 'falha_critica'})
-        return resultados_processamento
-
-    enviados_sucesso_count = 0; falhas_envio_count = 0; telefones_processados_count = 0
-    logging.info(f"GMC_LOG: \n--- Iniciando processamento CONSOLIDADO para {total_telefones_unicos} telefones únicos ---")
     
-    for telefone, grupo in grupos_por_telefone:
-        telefones_processados_count += 1; telefone_str = str(telefone)
-        logging.info(f"GMC_LOG: Processando Telefone {telefones_processados_count}/{total_telefones_unicos}: {telefone_str}")
-        
-        if not telefone_str.startswith("+55") or not (len(telefone_str) == 13 or len(telefone_str) == 14):
-            logging.warning(f"GMC_LOG: AVISO - Telefone '{telefone_str}' inválido. Pulando grupo.")
-            falhas_envio_count += 1; continue
-        
-        nome_cliente_valido = "[Cliente N/D]"
-        if COLUNA_NOME in grupo.columns and not grupo[COLUNA_NOME].dropna().empty:
-            nome_cliente_valido = grupo[COLUNA_NOME].dropna().iloc[0]
-        elif COLUNA_NOME in grupo.columns and not grupo.empty:
-             nome_cliente_valido = grupo[COLUNA_NOME].iloc[0] if pd.notna(grupo[COLUNA_NOME].iloc[0]) else "[Cliente N/D]"
-        
-        logging.info(f"GMC_LOG:   - Cliente: {nome_cliente_valido} | Parcelas: {len(grupo)}")
+    logging.info(f"--- [FIM] Processamento de Cobranças. Sucessos: {sucessos}, Falhas: {falhas} ---")
+    return resultados
 
-        lista_parcelas_info = []; valor_total_num = 0.0
-        nome_empresa_grupo = EMPRESA_PADRAO; primeiro_nome_empresa_encontrado = None
-        inconsistencia_empresa = False; primeira_parcela_valida_para_empresa = True
-        try:
-            for idx, parcela_row in grupo.iterrows(): # idx é o índice do DataFrame original (dados_validos)
-                lote_code = None; nome_empresa_parcela = None
-                duplicata_raw = parcela_row.get(COLUNA_LOTEAMENTO)
-                
-                if COLUNA_LOTEAMENTO and isinstance(duplicata_raw, str) and '/' in duplicata_raw:
-                    parts = duplicata_raw.split('/'); lote_code = parts[0].strip()
-                    nome_empresa_parcela = MAPEAMENTO_EMPRESA_POR_CODIGO.get(lote_code)
-                
-                if COLUNA_LOTEAMENTO and not lote_code and duplicata_raw and pd.notna(duplicata_raw): 
-                    logging.warning(f"GMC_LOG: Parcela (Cli:{nome_cliente_valido}, Idx DF: {idx}): Cód. loteamento inválido '{duplicata_raw}'.")
-                
-                if nome_empresa_parcela:
-                    if primeira_parcela_valida_para_empresa:
-                        primeiro_nome_empresa_encontrado = nome_empresa_parcela; nome_empresa_grupo = nome_empresa_parcela
-                        primeira_parcela_valida_para_empresa = False
-                    elif not inconsistencia_empresa and primeiro_nome_empresa_encontrado != nome_empresa_parcela:
-                        inconsistencia_empresa = True; nome_empresa_grupo = EMPRESA_PADRAO
-                        logging.warning(f"GMC_LOG: Cliente {nome_cliente_valido} ({telefone_str}) com empresas diferentes. Usando padrão.")
-                
-                nome_loteamento_parcela = MAPEAMENTO_LOTEAMENTO.get(lote_code, f'[Cód:{lote_code}]') if lote_code else '[Loteam. N/D]'
-                lote_raw = parcela_row.get(COLUNA_LOTE) if COLUNA_LOTE else None
-                venc_obj = parcela_row.get(COLUNA_VENCIMENTO) if COLUNA_VENCIMENTO else None
-                valor_num = parcela_row.get(COLUNA_VALOR) if COLUNA_VALOR else None
-
-                if COLUNA_LOTE and pd.isna(lote_raw): logging.warning(f"GMC_LOG: Parcela (Cli:{nome_cliente_valido}, Idx DF: {idx}): Lote ('{COLUNA_LOTE}') ausente.")
-                if COLUNA_VENCIMENTO and pd.isna(venc_obj): logging.warning(f"GMC_LOG: Parcela (Cli:{nome_cliente_valido}, Idx DF: {idx}): Venc. ('{COLUNA_VENCIMENTO}') ausente/inválido. Lido: '{parcela_row.get(COLUNA_VENCIMENTO)}'.")
-                if COLUNA_VALOR and pd.isna(valor_num): logging.warning(f"GMC_LOG: Parcela (Cli:{nome_cliente_valido}, Idx DF: {idx}): Valor ('{COLUNA_VALOR}') ausente/inválido. Lido: '{parcela_row.get(COLUNA_VALOR)}'.")
-                
-                lote_info = "[Ref N/D]"; venc_fmt = "[Data N/D]"; valor_fmt = "[Valor N/D]"; valor_parcela_num = 0.0
-                if COLUNA_LOTE and pd.notna(lote_raw): lote_str = str(lote_raw).strip(); lote_info = lote_str.split('/')[0].strip() if '/' in lote_str else lote_str
-                if pd.notna(venc_obj) and hasattr(venc_obj, 'strftime'):
-                    try: venc_fmt = venc_obj.strftime('%d/%m/%Y')
-                    except ValueError: pass
-                if pd.notna(valor_num):
-                    try: valor_parcela_num = float(valor_num); valor_fmt = formatar_valor_moeda_local(valor_parcela_num)
-                    except (ValueError, TypeError): valor_fmt = "[Erro Format. Valor]"
-                
-                lista_parcelas_info.append({'lote': lote_info, 'vencimento': venc_fmt, 'valor': valor_fmt, 'loteamento_nome': nome_loteamento_parcela})
-                if pd.notna(valor_num): valor_total_num += valor_parcela_num
-        except Exception as e_agg:
-            logging.error(f"GMC_LOG: ERRO ao agregar dados para {nome_cliente_valido} ({telefone_str}): {e_agg}", exc_info=True)
-            falhas_envio_count += 1; continue
-        
-        valor_total_fmt = formatar_valor_moeda_local(valor_total_num)
-        try:
-            mensagem = construtor_mensagem.criar_mensagem_consolidada(nome_cliente_valido, lista_parcelas_info, valor_total_fmt, nome_empresa_grupo)
-        except Exception as e_msg:
-            logging.error(f"GMC_LOG: ERRO ao construir mensagem para '{nome_cliente_valido}': {e_msg}.", exc_info=True)
-            falhas_envio_count += 1; continue
-        
-        sucesso_envio_msg = False
-        try:
-            sucesso_envio_msg = arquivo_txt_sender.salvar_mensagem_em_txt(telefone_str, nome_cliente_valido, mensagem)
-        except Exception as e_send:
-            logging.error(f"GMC_LOG: ERRO ao salvar msg para '{nome_cliente_valido}': {e_send}", exc_info=True)
-        
-        if sucesso_envio_msg: enviados_sucesso_count += 1
-        else: falhas_envio_count += 1; logging.warning(f"GMC_LOG:   - Falha ao salvar/enviar msg para {nome_cliente_valido} ({telefone_str}).")
-        
-        if total_telefones_unicos > 1 and telefones_processados_count < total_telefones_unicos and current_delay_seconds > 0:
-            time.sleep(current_delay_seconds)
-
-    resultados_processamento.update({
-        'status': 'sucesso' if falhas_envio_count == 0 else 'sucesso_parcial', 
-        'message': 'Processo concluído.' if falhas_envio_count == 0 else f'Processo concluído com {falhas_envio_count} falhas em grupos de telefone.', 
-        'mensagens_sucesso': enviados_sucesso_count, 
-        'falhas_envio': falhas_envio_count
-    })
-    logging.info(f"GMC_LOG: [FIM] processar_cobrancas. Sucesso: {enviados_sucesso_count}, Falhas: {falhas_envio_count}")
-    return resultados_processamento
-
+# --- Bloco para execução standalone ---
 if __name__ == "__main__":
-    logging.info("GMC_LOG: Executando 'gerador_mensagens_cobranca.py' em modo standalone.")
-    resultados = processar_cobrancas() 
-    if resultados:
-        logging.info(f"GMC_LOG: Resultado final (standalone): {resultados.get('message')}")
-        if resultados.get('caminho_arquivo_descartados'):
-            logging.info(f"GMC_LOG: Arquivo de descartados: {resultados['caminho_arquivo_descartados']}")
+    import tkinter as tk
+    from tkinter import filedialog
+    
+    logging.info("Executando em modo standalone.")
+    root = tk.Tk(); root.withdraw()
+    caminho_arquivo_tk = filedialog.askopenfilename(title="Selecione a planilha Excel")
+    if caminho_arquivo_tk:
+        resultados_exec = processar_cobrancas(caminho_arquivo_tk)
+        print("\n--- RESULTADO DA EXECUÇÃO ---")
+        for k, v in resultados_exec.items():
+            print(f"{k}: {v}")
     else:
-        logging.error("GMC_LOG: Processamento standalone não retornou resultados.")
+        print("Nenhum arquivo selecionado. Encerrando.")
