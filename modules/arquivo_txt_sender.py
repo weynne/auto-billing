@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # modules/arquivo_txt_sender.py
 
 import os
@@ -6,10 +5,8 @@ import re
 import logging 
 from datetime import datetime
 
-# Obtém logger 
 logger = logging.getLogger(__name__)
 
-# Diretório de saída
 DIRETORIO_SAIDA = "mensagens_txt_geradas"
 
 def limpar_nome_arquivo(nome): 

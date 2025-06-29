@@ -7,10 +7,7 @@ import logging
 import sys
 import locale
 
-# --- Configurações Iniciais ---
-# MUDANÇA: Carregamento do .env e configuração do logging movidos para uma função.
 def setup_environment_and_logging():
-    """Carrega .env e configura handlers de log (console e arquivo) se não existirem."""
     if load_dotenv():
         print("GMC_SETUP: Arquivo .env carregado.")
     else:
@@ -19,11 +16,9 @@ def setup_environment_and_logging():
     root_logger = logging.getLogger()
     if not root_logger.handlers:
         root_logger.setLevel(logging.INFO)
-        # Handler para o console
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(module)s: %(message)s', datefmt='%H:%M:%S'))
         root_logger.addHandler(console_handler)
-        # Handler para o arquivo
         try:
             log_path = "processamento_cobrancas.log"
             file_handler = logging.FileHandler(log_path, mode='a', encoding='utf-8')
@@ -33,11 +28,8 @@ def setup_environment_and_logging():
         except IOError as e:
             logging.error(f"Erro crítico ao criar log de arquivo: {e}")
 
-# MUDANÇA: Executa o setup imediatamente ao importar o módulo
 setup_environment_and_logging()
 
-
-# --- Importação de Módulos do Projeto ---
 try:
     from modules import leitor_planilha, construtor_mensagem, arquivo_txt_sender
     from config import MAPEAMENTO_LOTEAMENTO, MAPEAMENTO_EMPRESA_POR_CODIGO, EMPRESA_PADRAO
@@ -45,8 +37,6 @@ except ImportError as e:
     logging.critical(f"Erro Crítico ao importar submódulos ou config: {e}", exc_info=True)
     raise
 
-# --- Carregamento das Configurações do .env ---
-# MUDANÇA: Agrupado em um dicionário para facilitar o acesso
 CONFIG = {
     'col_nome': os.getenv('COLUNA_NOME'),
     'col_telefone': os.getenv('COLUNA_TELEFONE'),
@@ -58,10 +48,7 @@ CONFIG = {
     'telefone_contato': os.getenv('TELEFONE_CONTATO', '[Seu Número de Telefone]')
 }
 
-# --- Funções Auxiliares ---
-
 def _formatar_moeda(valor):
-    """Tenta formatar um float como moeda BRL, com fallback robusto."""
     if not isinstance(valor, (int, float)):
         return "N/A"
     try:
@@ -72,9 +59,6 @@ def _formatar_moeda(valor):
     return locale.currency(valor, grouping=True, symbol='R$')
 
 def _salvar_descartados(df_descartados, nome_arquivo_original):
-    """
-    # MUDANÇA: Função dedicada para salvar a planilha de contatos descartados.
-    """
     if df_descartados.empty:
         return None, 0
     
@@ -93,17 +77,12 @@ def _salvar_descartados(df_descartados, nome_arquivo_original):
         return None, 0
 
 def _processar_grupo_cliente(telefone, grupo_df):
-    """
-    # MUDANÇA: Função dedicada para processar um grupo de parcelas de um mesmo telefone.
-    Agrega dados, constrói e salva a mensagem.
-    """
     nome_cliente = grupo_df[CONFIG['col_nome']].iloc[0]
     logging.info(f"Processando grupo para Cliente: {nome_cliente} | Telefone: {telefone} | Parcelas: {len(grupo_df)}")
 
     lista_parcelas_info = []
     valor_total = 0.0
     
-    # Lógica para determinar a empresa (simplificada)
     codigos_loteamento = grupo_df[CONFIG['col_loteamento']].str.split('/').str[0].str.strip().unique()
     empresas_encontradas = {MAPEAMENTO_EMPRESA_POR_CODIGO.get(cod) for cod in codigos_loteamento if cod in MAPEAMENTO_EMPRESA_POR_CODIGO}
     
@@ -127,8 +106,7 @@ def _processar_grupo_cliente(telefone, grupo_df):
         lista_parcelas_info.append(info)
         if isinstance(valor_parcela, (int, float)):
             valor_total += valor_parcela
-            
-    # Cria e salva a mensagem
+
     mensagem = construtor_mensagem.criar_mensagem_consolidada(
         nome_cliente=nome_cliente,
         lista_parcelas_info=lista_parcelas_info,
@@ -139,18 +117,14 @@ def _processar_grupo_cliente(telefone, grupo_df):
     
     return arquivo_txt_sender.salvar_mensagem_em_txt(telefone, nome_cliente, mensagem)
 
-
-# --- FUNÇÃO PRINCIPAL ---
 def processar_cobrancas(arquivo_planilha_input):
     logging.info("--- [INÍCIO] Processamento de Cobranças ---")
-    
-    # Validação inicial de configuração
+
     if not CONFIG['col_nome'] or not CONFIG['col_telefone']:
         msg = "ERRO CRÍTICO: Nomes das colunas de NOME ou TELEFONE não definidos no .env."
         logging.error(msg)
         return {'status': 'falha', 'message': msg}
 
-    # Carrega e pré-processa a planilha
     df = leitor_planilha.carregar_inadimplentes(arquivo_planilha_input, CONFIG)
     nome_arquivo = getattr(arquivo_planilha_input, 'name', 'arquivo_local.xlsx')
     
@@ -169,12 +143,10 @@ def processar_cobrancas(arquivo_planilha_input):
 
     resultados['total_registros_carregados'] = len(df)
     
-    # Separa contatos válidos e descartados
     filtro_validos = df[CONFIG['col_telefone']].notna() & (df[CONFIG['col_telefone']] != '')
     df_validos = df[filtro_validos]
     df_descartados = df[~filtro_validos]
     
-    # Salva descartados em um arquivo Excel separado
     caminho_descartados, num_descartados = _salvar_descartados(df_descartados, nome_arquivo)
     resultados.update({
         'caminho_arquivo_descartados': caminho_descartados,
@@ -188,7 +160,6 @@ def processar_cobrancas(arquivo_planilha_input):
         resultados.update({'status': 'sucesso_sem_dados', 'message': msg})
         return resultados
         
-    # Agrupa por telefone e processa cada grupo
     grupos = df_validos.groupby(CONFIG['col_telefone'], sort=False)
     resultados['total_telefones_unicos'] = len(grupos)
     
@@ -203,10 +174,9 @@ def processar_cobrancas(arquivo_planilha_input):
         else:
             falhas += 1
         
-        if i < len(grupos) - 1: # Evita delay após o último item
+        if i < len(grupos) - 1:
             time.sleep(CONFIG['delay_segundos'])
             
-    # Finaliza e retorna os resultados consolidados
     if falhas == 0:
         message = "Processamento concluído com sucesso!"
         status = 'sucesso'
@@ -224,7 +194,6 @@ def processar_cobrancas(arquivo_planilha_input):
     logging.info(f"--- [FIM] Processamento de Cobranças. Sucessos: {sucessos}, Falhas: {falhas} ---")
     return resultados
 
-# --- Bloco para execução standalone ---
 if __name__ == "__main__":
     import tkinter as tk
     from tkinter import filedialog
