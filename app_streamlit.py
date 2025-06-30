@@ -8,22 +8,19 @@ import shutil
 from datetime import datetime
 import plotly.express as px
 
-# --- Configuração da Página ---
 st.set_page_config(
     page_title="Dashboard de Cobrança",
     page_icon="📊",
     layout="wide"
 )
 
-# --- Ajuste de Path e Imports do Projeto ---
 _project_root = os.path.dirname(os.path.abspath(__file__))
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-from modules import leitor_planilha, arquivo_txt_sender
+from modules import leitor_planilha, txt_sender
 import gerador_mensagens_cobranca
 
-# --- Funções Auxiliares (Logging, Limpeza, etc.) ---
 class StreamlitLogHandler(logging.Handler):
     def __init__(self):
         super().__init__()
@@ -59,10 +56,6 @@ def limpar_diretorios_saida():
             logging.error(f"Erro ao criar o diretório '{dir_path}': {e}")
 
 def exibir_resultados_processamento(resultados):
-    """
-    Exibe os resultados do processamento principal DENTRO DA BARRA LATERAL,
-    usando um expander para manter a interface organizada.
-    """
     if not resultados:
         st.sidebar.error("O processamento não retornou resultados válidos.")
         logging.error("O dicionário de resultados do processamento principal estava vazio.")
@@ -182,18 +175,16 @@ def main():
                 color_discrete_sequence=px.colors.sequential.Reds_r
             )
             
-            # Atualiza a aparência dos textos e das fatias
             fig.update_traces(
                 textposition='outside', 
                 textinfo='percent+label', 
-                rotation=90 # Ajustei a rotação para melhorar o layout
+                rotation=90
             )
             
-            # MUDANÇA: Aumenta a margem superior (t) e inferior (b) para dar espaço aos rótulos
             fig.update_layout(
                 showlegend=False, 
-                height=500, # Aumentei um pouco a altura geral
-                margin=dict(t=100, b=100, l=0, r=0) # Margens generosas no topo (t) e embaixo (b)
+                height=500,
+                margin=dict(t=100, b=100, l=0, r=0)
             )
             
             st.plotly_chart(fig, use_container_width=True)

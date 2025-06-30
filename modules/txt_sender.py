@@ -1,4 +1,4 @@
-# modules/arquivo_txt_sender.py
+# modules/txt_sender.py
 
 import os
 import re

@@ -7,6 +7,8 @@ import logging
 import sys
 import locale
 
+from modules import txt_sender
+
 def setup_environment_and_logging():
     if load_dotenv():
         print("GMC_SETUP: Arquivo .env carregado.")
@@ -31,10 +33,10 @@ def setup_environment_and_logging():
 setup_environment_and_logging()
 
 try:
-    from modules import leitor_planilha, construtor_mensagem, arquivo_txt_sender
+    from modules import leitor_planilha, construtor_mensagem, waha_sender, txt_sender
     from config import MAPEAMENTO_LOTEAMENTO, MAPEAMENTO_EMPRESA_POR_CODIGO, EMPRESA_PADRAO
 except ImportError as e:
-    logging.critical(f"Erro Crítico ao importar submódulos ou config: {e}", exc_info=True)
+    logging.critical(f"Erro Crítico ao importar submódulos: {e}", exc_info=True)
     raise
 
 CONFIG = {
@@ -44,8 +46,8 @@ CONFIG = {
     'col_valor': os.getenv('COLUNA_VALOR'),
     'col_vencimento': os.getenv('COLUNA_VENCIMENTO'),
     'col_loteamento': os.getenv('COLUNA_LOTEAMENTO'),
-    'delay_segundos': int(os.getenv('DELAY_SEGUNDOS', '1')),
-    'telefone_contato': os.getenv('TELEFONE_CONTATO', '[Seu Número de Telefone]')
+    'telefone_contato': os.getenv('TELEFONE_CONTATO', '[Seu Número de Telefone]'),
+    'modo_envio': os.getenv('MODO_ENVIO', 'ARQUIVO_TXT').upper()
 }
 
 def _formatar_moeda(valor):
@@ -115,10 +117,17 @@ def _processar_grupo_cliente(telefone, grupo_df):
         telefone_contato=CONFIG['telefone_contato']
     )
     
-    return arquivo_txt_sender.salvar_mensagem_em_txt(telefone, nome_cliente, mensagem)
+    if CONFIG['modo_envio'] == 'WAHA':
+        return waha_sender.enviar_mensagem_waha(telefone, mensagem)
+    elif CONFIG['modo_envio'] == 'ARQUIVO_TXT':
+        return txt_sender.salvar_mensagem_em_txt(telefone, nome_cliente, mensagem)
+    else:
+        logging.error(f"Modo de envio '{CONFIG['modo_envio']}' inválido. Verifique o arquivo .env.")
+        return False
+
 
 def processar_cobrancas(arquivo_planilha_input):
-    logging.info("--- [INÍCIO] Processamento de Cobranças ---")
+    logging.info(f"--- [INÍCIO] Processamento de Cobranças (Modo: {CONFIG['modo_envio']}) ---")
 
     if not CONFIG['col_nome'] or not CONFIG['col_telefone']:
         msg = "ERRO CRÍTICO: Nomes das colunas de NOME ou TELEFONE não definidos no .env."
@@ -131,7 +140,6 @@ def processar_cobrancas(arquivo_planilha_input):
     resultados = {
         'status': 'falha', 'message': 'Processo não iniciado.',
         'planilha_processada': nome_arquivo, 'total_registros_carregados': 0,
-        'output_dir': arquivo_txt_sender.DIRETORIO_SAIDA,
     }
 
     if df is None or df.empty:
@@ -168,15 +176,12 @@ def processar_cobrancas(arquivo_planilha_input):
     
     logging.info(f"Iniciando geração de mensagens para {len(grupos)} telefones únicos.")
     
-    for i, (telefone, grupo_df) in enumerate(grupos):
+    for telefone, grupo_df in grupos:
         if _processar_grupo_cliente(telefone, grupo_df):
             sucessos += 1
         else:
             falhas += 1
-        
-        if i < len(grupos) - 1:
-            time.sleep(CONFIG['delay_segundos'])
-            
+    
     if falhas == 0:
         message = "Processamento concluído com sucesso!"
         status = 'sucesso'
@@ -193,18 +198,3 @@ def processar_cobrancas(arquivo_planilha_input):
     
     logging.info(f"--- [FIM] Processamento de Cobranças. Sucessos: {sucessos}, Falhas: {falhas} ---")
     return resultados
-
-if __name__ == "__main__":
-    import tkinter as tk
-    from tkinter import filedialog
-    
-    logging.info("Executando em modo standalone.")
-    root = tk.Tk(); root.withdraw()
-    caminho_arquivo_tk = filedialog.askopenfilename(title="Selecione a planilha Excel")
-    if caminho_arquivo_tk:
-        resultados_exec = processar_cobrancas(caminho_arquivo_tk)
-        print("\n--- RESULTADO DA EXECUÇÃO ---")
-        for k, v in resultados_exec.items():
-            print(f"{k}: {v}")
-    else:
-        print("Nenhum arquivo selecionado. Encerrando.")

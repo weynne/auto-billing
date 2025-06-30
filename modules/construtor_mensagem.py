@@ -17,7 +17,7 @@ def criar_mensagem_consolidada(nome_cliente, lista_parcelas_info, valor_total_fm
     for i, p in enumerate(lista_parcelas_info):
         detalhes_parcelas_str += (
             f"*{i+1}. Loteamento {p.get('loteamento_nome', 'N/D')}*\n"
-            f"   • Lote/Ref.: {p.get('lote', 'N/D')}\n"
+            f"   • Lote: {p.get('lote', 'N/D')}\n"
             f"   • Vencimento: {p.get('vencimento', 'N/D')}\n"
             f"   • Valor: {p.get('valor', 'N/D')}\n\n"
         )
@@ -31,8 +31,8 @@ def criar_mensagem_consolidada(nome_cliente, lista_parcelas_info, valor_total_fm
         f"1️⃣ *Responder esta mensagem*\n"
         f"2️⃣ *Ligar para:* {telefone_contato}\n\n"
         f"Caso o pagamento já tenha sido realizado, por favor, desconsidere este aviso.\n\n"
-        f"Agradecemos a sua atenção.\n"
-        f"Atenciosamente."
+        f"Atenciosamente, \n\n"
+        f"{nome_empresa}" 
     )
 
     return mensagem
